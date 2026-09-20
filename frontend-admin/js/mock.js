@@ -253,11 +253,13 @@
     '科技': ['软件', '硬件', '互联网', '云计算'],
   };
 
-  // 生成短 ID，格式如 M006、SET005、k_abc123
+  // 生成短 ID，格式如 M006、SET005、k_xxx
+  var idSeq = 0;
   function nextId(prefix, existingList) {
-    // 知识条目使用短时间戳
+    // 知识条目使用时间戳 + 自增序列 + 随机串，保证一次批量分发多家时互不碰撞
     if (prefix === 'k') {
-      return 'k_' + Date.now().toString(36);
+      idSeq = (idSeq + 1) % 100000;
+      return 'k_' + Date.now().toString(36) + '_' + idSeq.toString(36) + Math.random().toString(36).slice(2, 6);
     }
     
     // 其他类型使用递增编号
@@ -372,6 +374,80 @@
       });
       store.setMerchantKnowledge(merchantId, list);
       return added;
+    },
+
+    /**
+     * 将同一份问答一次性分发到多个商家：
+     * 每家各自生成一份独立知识副本（独立 id），后续单家修改互不影响；
+     * 逐家读取、判重、写入并持久化，单家异常不影响其它商家。
+     *
+     * @param {string[]} merchantIds 目标商家 id 列表
+     * @param {Array<{standardQ:string, similarQs:string[], answer:string}>} items 问答列表（需为已去重/已勾选的有效列表）
+     * @returns {{merchantId:string, added:number, skipped:Array<{index:number, standardQ:string, reason:string}>, error:string?}[]}
+     *          按商家返回写入条数与跳过明细（已有相同标准问、同批标准问重复）
+     */
+    distributeMerchantKnowledge: function (merchantIds, items) {
+      // 先做批内去重：同一标准问只有第一次出现会写入，后续条目在所有商家均跳过
+      var firstSeen = {};
+      var effective = [];
+      var internalSkipped = [];
+      items.forEach(function (item, index) {
+        var q = (item.standardQ || '').trim();
+        if (firstSeen[q] !== undefined) {
+          internalSkipped.push({
+            index: index,
+            standardQ: item.standardQ,
+            reason: '与本次第 ' + (firstSeen[q] + 1) + ' 条标准问相同，同批重复'
+          });
+        } else {
+          firstSeen[q] = index;
+          effective.push(item);
+        }
+      });
+
+      var results = [];
+      (merchantIds || []).forEach(function (merchantId) {
+        var result = { merchantId: merchantId, added: 0, skipped: internalSkipped.map(function (s) {
+          return { index: s.index, standardQ: s.standardQ, reason: s.reason };
+        }), error: null };
+        try {
+          var list = store.getMerchantKnowledge(merchantId).slice();
+          var existingQMap = {};
+          list.forEach(function (k) {
+            existingQMap[k.standardQ] = k;
+          });
+
+          effective.forEach(function (item, index) {
+            var originalIndex = items.indexOf(item);
+            if (existingQMap[item.standardQ]) {
+              result.skipped.push({
+                index: originalIndex,
+                standardQ: item.standardQ,
+                reason: '该商家已有相同标准问'
+              });
+              return;
+            }
+            // 独立副本：深拷贝内容并分配独立 id，保证后续单家修改互不影响
+            var copy = {
+              standardQ: item.standardQ,
+              similarQs: (item.similarQs || []).slice(),
+              answer: item.answer
+            };
+            copy.id = nextId('k');
+            list.push(copy);
+            existingQMap[item.standardQ] = copy;
+            result.added += 1;
+          });
+
+          // 每家独立写入持久化：已经写入成功的商家，不会因后续商家失败而回滚
+          store.setMerchantKnowledge(merchantId, list);
+        } catch (e) {
+          result.error = (e && e.message) ? e.message : '写入失败';
+        }
+        results.push(result);
+      });
+
+      return results;
     },
 
     getMerchantSets: function () {
