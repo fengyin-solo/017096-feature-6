@@ -19,7 +19,8 @@
     importTab: 'file',
     importParsedItems: [],
     importFileContent: null,
-    importFileName: ''
+    importFileName: '',
+    selectedMerchantIds: []
   };
 
   // ====================== DOM 元素缓存 ======================
@@ -55,7 +56,10 @@
       // 批量导入相关
       btnBatchImport: document.getElementById('btnBatchImport'),
       batchImportModal: document.getElementById('batchImportModal'),
-      importMerchantSelect: document.getElementById('importMerchantSelect'),
+      importMerchantPanel: document.getElementById('importMerchantPanel'),
+      importMerchantSelectedCount: document.getElementById('importMerchantSelectedCount'),
+      btnSelectAllImportMerchants: document.getElementById('btnSelectAllImportMerchants'),
+      btnClearImportMerchants: document.getElementById('btnClearImportMerchants'),
       importTabFile: document.getElementById('importTabFile'),
       importTabText: document.getElementById('importTabText'),
       importFilePanel: document.getElementById('importFilePanel'),
@@ -65,10 +69,13 @@
       importFileNameEl: document.getElementById('importFileName'),
       importTextArea: document.getElementById('importTextArea'),
       btnParseImport: document.getElementById('btnParseImport'),
+      importError: document.getElementById('importError'),
       importPreviewSection: document.getElementById('importPreviewSection'),
       importStats: document.getElementById('importStats'),
+      importMerchantPreviewBody: document.getElementById('importMerchantPreviewBody'),
       importPreviewBody: document.getElementById('importPreviewBody'),
       importSelectAll: document.getElementById('importSelectAll'),
+      importSelectAllMerchants: document.getElementById('importSelectAllMerchants'),
       importSelectedCount: document.getElementById('importSelectedCount'),
       importModalCancel: document.getElementById('importModalCancel'),
       importModalCancelNoPreview: document.getElementById('importModalCancelNoPreview'),
@@ -335,15 +342,16 @@
       state.importFileContent = null;
       state.importFileName = '';
       state.importTab = 'file';
+      state.selectedMerchantIds = state.currentMerchantId ? [state.currentMerchantId] : [];
 
-      this.fillMerchantSelect();
-      elements.importMerchantSelect.value = state.currentMerchantId || '';
+      this.renderMerchantPanel();
       elements.importTextArea.value = '';
       elements.importFileNameEl.classList.add('hidden');
       elements.importFileNameEl.textContent = '';
       elements.importFileInput.value = '';
       elements.importPreviewSection.style.display = 'none';
       elements.importNoPreview.style.display = 'block';
+      this.hideErrors();
       this.switchTab('file');
       elements.batchImportModal.style.display = 'flex';
     },
@@ -354,15 +362,61 @@
       state.importFileContent = null;
     },
 
-    fillMerchantSelect: function () {
-      var merchants = MockStore.getMerchants();
-      var options = merchants.map(function (m) {
-        return { value: m.id, label: m.name + '（' + m.id + '）' };
+    getMerchants: function () {
+      return MockStore.getMerchants();
+    },
+
+    getSelectedMerchantIds: function () {
+      var selectedMap = {};
+      state.selectedMerchantIds.forEach(function (id) { selectedMap[id] = true; });
+      return this.getMerchants()
+        .map(function (m) { return m.id; })
+        .filter(function (id) { return selectedMap[id]; });
+    },
+
+    setMerchantSelection: function (ids, shouldRenderPreview, rebuildPanel) {
+      var validMap = {};
+      this.getMerchants().forEach(function (m) { validMap[m.id] = true; });
+      state.selectedMerchantIds = ids.filter(function (id, index, list) {
+        return validMap[id] && list.indexOf(id) === index;
       });
-      Select.fill(elements.importMerchantSelect, options, '请选择要导入知识的商家');
+      if (rebuildPanel === false) {
+        this.syncMerchantPanelStatus();
+      } else {
+        this.renderMerchantPanel();
+      }
+      if (shouldRenderPreview && elements.importPreviewSection.style.display === 'block') {
+        this.renderPreview();
+      }
+    },
+
+    syncMerchantPanelStatus: function () {
+      var merchants = this.getMerchants();
+      elements.importMerchantSelectedCount.textContent = '已选 ' + state.selectedMerchantIds.length + ' 家';
+      elements.btnSelectAllImportMerchants.textContent = state.selectedMerchantIds.length === merchants.length && merchants.length > 0 ? '取消全选' : '全选';
+      if (elements.importSelectAllMerchants) {
+        elements.importSelectAllMerchants.checked = merchants.length > 0 && state.selectedMerchantIds.length === merchants.length;
+      }
+    },
+
+    renderMerchantPanel: function () {
+      var selectedMap = {};
+      state.selectedMerchantIds.forEach(function (id) { selectedMap[id] = true; });
+      var merchants = this.getMerchants();
+
+      elements.importMerchantPanel.innerHTML = merchants.map(function (m) {
+        return '<label class="import-merchant-option">' +
+          '<input type="checkbox" class="import-merchant-check" value="' + Utils.escapeHtml(m.id) + '"' + (selectedMap[m.id] ? ' checked' : '') + ' />' +
+          '<span class="truncate">' + Utils.escapeHtml(m.name) + '</span>' +
+          '<span class="merchant-id ml-auto">' + Utils.escapeHtml(m.id) + '</span>' +
+        '</label>';
+      }).join('');
+
+      this.syncMerchantPanelStatus();
     },
 
     switchTab: function (tab) {
+      if (state.importTab !== tab) this.resetPreview();
       state.importTab = tab;
       if (tab === 'file') {
         elements.importTabFile.classList.add('import-tab-active');
@@ -377,63 +431,209 @@
       }
     },
 
-    parseCSV: function (text) {
-      var lines = text.split(/\r?\n/).filter(function (l) { return l.trim(); });
-      if (lines.length < 2) return [];
-      var results = [];
-      for (var i = 1; i < lines.length; i++) {
-        var cols = lines[i].split(',');
-        if (cols.length < 3) continue;
-        var standardQ = cols[0].trim().replace(/^"|"$/g, '');
-        var similarQsRaw = cols[1].trim().replace(/^"|"$/g, '');
-        var answer = cols.slice(2).join(',').trim().replace(/^"|"$/g, '');
-        if (!standardQ || !answer) continue;
-        var similarQs = similarQsRaw ? similarQsRaw.split(/[;；]/).map(function (s) { return s.trim(); }).filter(Boolean) : [];
-        results.push({ standardQ: standardQ, similarQs: similarQs, answer: answer });
+    normalizeSimilarQs: function (value) {
+      if (Array.isArray(value)) {
+        return value.map(function (s) { return String(s).trim(); }).filter(Boolean);
       }
-      return results;
+      if (typeof value === 'string' && value.trim()) {
+        return value.split(/[;；\n]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      }
+      return [];
+    },
+
+    normalizeItem: function (raw, sourceLabel) {
+      var errors = [];
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return { item: null, errors: [sourceLabel + '必须是问答对象'] };
+      }
+
+      var standardQ = String(raw.standardQ || raw['标准问'] || '').trim();
+      var answer = String(raw.answer || raw['答案'] || '').trim();
+      var similarRaw = raw.similarQs !== undefined ? raw.similarQs : raw['相似问'];
+
+      if (typeof similarRaw !== 'string' && !Array.isArray(similarRaw) && similarRaw !== undefined) {
+        errors.push(sourceLabel + '的“相似问”必须是字符串或数组');
+      }
+      if (!standardQ) errors.push(sourceLabel + '缺少“标准问”');
+      if (!answer) errors.push(sourceLabel + '缺少“答案”');
+
+      if (errors.length > 0) {
+        return { item: null, errors: errors };
+      }
+
+      return {
+        item: {
+          standardQ: standardQ,
+          similarQs: this.normalizeSimilarQs(similarRaw),
+          answer: answer
+        },
+        errors: []
+      };
+    },
+
+    parseCSV: function (text) {
+      var normalized = String(text || '').replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      var records = [];
+      var row = [];
+      var field = '';
+      var inQuotes = false;
+      var recordStartLine = 1;
+      var line = 1;
+      var i;
+
+      function finishRecord() {
+        row.push(field);
+        var isEmpty = row.every(function (value) { return !value.trim(); });
+        if (!isEmpty) {
+          records.push({ startLine: recordStartLine, columns: row });
+        }
+        row = [];
+        field = '';
+        recordStartLine = line + 1;
+      }
+
+      for (i = 0; i < normalized.length; i++) {
+        var ch = normalized[i];
+
+        if (inQuotes) {
+          if (ch === '"') {
+            if (normalized[i + 1] === '"') {
+              field += '"';
+              i++;
+            } else {
+              inQuotes = false;
+            }
+          } else if (ch === '\n') {
+            field += '\n';
+            line++;
+          } else {
+            field += ch;
+          }
+        } else if (ch === '"' && field.trim() === '') {
+          inQuotes = true;
+        } else if (ch === ',') {
+          row.push(field);
+          field = '';
+        } else if (ch === '\n') {
+          finishRecord();
+          line++;
+        } else {
+          field += ch;
+        }
+      }
+
+      if (inQuotes) {
+        return { items: [], errors: ['CSV 第 ' + records.length + ' 条存在未闭合的引号'] };
+      }
+      if (row.length > 0 || field.trim()) finishRecord();
+
+      if (records.length === 0) {
+        return { items: [], errors: ['CSV 文件没有有效内容'] };
+      }
+
+      var header = records[0].columns.map(function (col) { return col.trim(); });
+      if (header[0] !== '标准问' || header[1] !== '相似问' || header[2] !== '答案') {
+        return { items: [], errors: ['CSV 表头有误，前三列必须为：标准问,相似问,答案'] };
+      }
+
+      var items = [];
+      var errors = [];
+      for (var r = 1; r < records.length; r++) {
+        var cols = records[r].columns;
+        var sourceLabel = '第 ' + r + ' 条（文件第 ' + records[r].startLine + ' 行）';
+
+        if (cols.length < 3) {
+          errors.push(sourceLabel + '字段不足，应为“标准问、相似问、答案”3 列');
+          continue;
+        }
+
+        var raw = {
+          standardQ: cols[0],
+          similarQs: cols[1],
+          answer: cols.slice(2).join(',')
+        };
+        var normalizedResult = this.normalizeItem(raw, 'CSV ' + sourceLabel);
+        if (normalizedResult.errors.length) {
+          errors = errors.concat(normalizedResult.errors);
+        } else {
+          items.push({ item: normalizedResult.item, sourceLabel: 'CSV ' + sourceLabel });
+        }
+      }
+
+      return { items: items, errors: errors };
     },
 
     parseJSON: function (text) {
+      var data;
       try {
-        var data = JSON.parse(text);
-        if (!Array.isArray(data)) return [];
-        return data.map(function (item) {
-          return {
-            standardQ: (item.standardQ || item['标准问'] || '').trim(),
-            similarQs: Array.isArray(item.similarQs || item['相似问'])
-              ? (item.similarQs || item['相似问']).map(function (s) { return String(s).trim(); }).filter(Boolean)
-              : (typeof (item.similarQs || item['相似问']) === 'string'
-                ? (item.similarQs || item['相似问']).split(/[;；]/).map(function (s) { return s.trim(); }).filter(Boolean)
-                : []),
-            answer: (item.answer || item['答案'] || '').trim()
-          };
-        }).filter(function (item) { return item.standardQ && item.answer; });
+        data = JSON.parse(text);
       } catch (e) {
-        return [];
+        return { items: [], errors: ['JSON 格式有误，请确认内容为对象数组'] };
       }
+
+      if (!Array.isArray(data)) {
+        return { items: [], errors: ['JSON 顶层必须是数组'] };
+      }
+      if (data.length === 0) {
+        return { items: [], errors: ['JSON 数组中没有问答内容'] };
+      }
+
+      var items = [];
+      var errors = [];
+      data.forEach(function (raw, index) {
+        var sourceLabel = 'JSON 第 ' + (index + 1) + ' 条';
+        var result = this.normalizeItem(raw, sourceLabel);
+        if (result.errors.length) {
+          errors = errors.concat(result.errors);
+        } else {
+          items.push({ item: result.item, sourceLabel: sourceLabel });
+        }
+      }, this);
+
+      return { items: items, errors: errors };
     },
 
     parseText: function (text) {
-      var lines = text.split(/\r?\n/).filter(function (l) { return l.trim(); });
-      var results = [];
-      lines.forEach(function (line) {
+      var lines = String(text || '').replace(/^﻿/, '').split(/\r?\n/);
+      var items = [];
+      var errors = [];
+      var entryNo = 0;
+
+      lines.forEach(function (lineValue, index) {
+        var line = lineValue.trim();
+        if (!line) return;
+        entryNo += 1;
+        var sourceLabel = '文本第 ' + entryNo + ' 条（第 ' + (index + 1) + ' 行）';
         var parts = line.split('|');
-        if (parts.length < 3) {
-          if (parts.length === 2) {
-            results.push({ standardQ: parts[0].trim(), similarQs: [], answer: parts[1].trim() });
-          }
+
+        if (parts.length < 2) {
+          errors.push(sourceLabel + '格式有误，应为：标准问|相似问|答案');
           return;
         }
-        var standardQ = parts[0].trim();
-        var similarQsRaw = parts[1].trim();
-        var answer = parts.slice(2).join('|').trim();
-        var similarQs = similarQsRaw ? similarQsRaw.split(/[;；]/).map(function (s) { return s.trim(); }).filter(Boolean) : [];
-        if (standardQ && answer) {
-          results.push({ standardQ: standardQ, similarQs: similarQs, answer: answer });
+
+        var raw;
+        if (parts.length === 2) {
+          raw = { standardQ: parts[0], similarQs: '', answer: parts[1] };
+        } else {
+          raw = {
+            standardQ: parts[0],
+            similarQs: parts[1],
+            answer: parts.slice(2).join('|')
+          };
         }
-      });
-      return results;
+
+        var result = this.normalizeItem(raw, sourceLabel);
+        if (result.errors.length) {
+          errors = errors.concat(result.errors);
+        } else {
+          items.push({ item: result.item, sourceLabel: sourceLabel });
+        }
+      }, this);
+
+      if (items.length === 0 && errors.length === 0) {
+        errors.push('未能解析到有效的问答内容');
+      }
+      return { items: items, errors: errors };
     },
 
     handleFileSelect: function (file) {
@@ -441,6 +641,7 @@
       state.importFileName = file.name;
       elements.importFileNameEl.textContent = '已选择：' + file.name;
       elements.importFileNameEl.classList.remove('hidden');
+      this.resetPreview();
       var reader = new FileReader();
       reader.onload = function (e) {
         state.importFileContent = e.target.result;
@@ -448,191 +649,311 @@
       reader.readAsText(file);
     },
 
+    resetPreview: function () {
+      state.importParsedItems = [];
+      elements.importPreviewSection.style.display = 'none';
+      elements.importNoPreview.style.display = 'block';
+      this.hideErrors();
+    },
+
+    hideErrors: function () {
+      elements.importError.style.display = 'none';
+      elements.importError.innerHTML = '';
+    },
+
+    showErrors: function (errors) {
+      var visibleErrors = errors.slice(0, 5);
+      var html = '<div class="import-error-title"><span class="iconify" data-icon="lucide:alert-circle" data-width="16" data-height="16"></span>文件格式有误，请修正后重新解析</div>' +
+        '<ul class="list-disc list-inside space-y-1">' +
+        visibleErrors.map(function (msg) { return '<li>' + Utils.escapeHtml(msg) + '</li>'; }).join('');
+
+      if (errors.length > visibleErrors.length) {
+        html += '<li>另有 ' + (errors.length - visibleErrors.length) + ' 个格式问题</li>';
+      }
+      html += '</ul>';
+      elements.importError.innerHTML = html;
+      elements.importError.style.display = 'block';
+    },
+
     parseContent: function () {
-      var merchantId = elements.importMerchantSelect.value;
-      if (!merchantId) {
-        Toast.show('请先选择要导入的商家', 'error');
+      var selectedMerchantIds = this.getSelectedMerchantIds();
+      if (selectedMerchantIds.length === 0) {
+        Toast.show('请至少勾选一家商家', 'error');
         return;
       }
 
-      var items = [];
+      var parsed;
       if (state.importTab === 'file') {
         if (!state.importFileContent) {
           Toast.show('请先选择文件', 'error');
           return;
         }
         var name = (state.importFileName || '').toLowerCase();
-        if (name.endsWith('.json')) {
-          items = this.parseJSON(state.importFileContent);
-        } else {
-          items = this.parseCSV(state.importFileContent);
-        }
+        parsed = name.endsWith('.json')
+          ? this.parseJSON(state.importFileContent)
+          : this.parseCSV(state.importFileContent);
       } else {
         var text = elements.importTextArea.value.trim();
         if (!text) {
           Toast.show('请粘贴问答内容', 'error');
           return;
         }
-        try {
-          items = this.parseJSON(text);
-          if (items.length === 0) items = this.parseText(text);
-        } catch (_) {
-          items = this.parseText(text);
-        }
+        parsed = /^[\s\r\n]*[\[{]/.test(text) ? this.parseJSON(text) : this.parseText(text);
       }
 
-      if (items.length === 0) {
+      this.hideErrors();
+      if (parsed.errors.length > 0) {
+        state.importParsedItems = [];
+        elements.importPreviewSection.style.display = 'none';
+        elements.importNoPreview.style.display = 'block';
+        this.showErrors(parsed.errors);
+        Toast.show(parsed.errors[0], 'error');
+        return;
+      }
+      if (parsed.items.length === 0) {
         Toast.show('未能解析到有效的问答内容，请检查格式', 'error');
         return;
       }
 
-      var checkResults = MockStore.checkMerchantKnowledgeDuplicates(merchantId, items);
-
       var seenQ = {};
-      var dupInfoMap = {};
-      var firstOccurrenceIndices = {};
-      items.forEach(function (it, idx) {
-        var q = it.standardQ;
-        if (seenQ[q] !== undefined) {
-          var firstIdx = seenQ[q];
-          dupInfoMap[idx] = { firstIndex: firstIdx };
-          if (!firstOccurrenceIndices[firstIdx]) firstOccurrenceIndices[firstIdx] = [];
-          firstOccurrenceIndices[firstIdx].push(idx);
-        } else {
-          seenQ[q] = idx;
-        }
-      });
-
-      state.importParsedItems = checkResults.map(function (r, idx) {
-        var isInternalDup = dupInfoMap[idx] !== undefined;
-        var isExistingDup = r.isDuplicate;
-        var isDup = isExistingDup || isInternalDup;
-        var dupType = isExistingDup ? 'existing' : (isInternalDup ? 'internal' : null);
-        var firstIndex = isInternalDup ? dupInfoMap[idx].firstIndex : null;
+      state.importParsedItems = parsed.items.map(function (entry, index) {
+        var q = entry.item.standardQ;
+        var firstIndex = seenQ[q];
+        var isInternalDuplicate = firstIndex !== undefined;
+        if (!isInternalDuplicate) seenQ[q] = index;
         return {
-          index: idx,
-          item: r.item,
-          isDuplicate: isDup,
-          dupType: dupType,
-          existingItem: r.existingItem,
-          firstIndex: firstIndex,
-          internalDupIndices: firstOccurrenceIndices[idx] || [],
-          checked: !isDup
+          index: index,
+          sourceLabel: entry.sourceLabel,
+          item: entry.item,
+          isInternalDuplicate: isInternalDuplicate,
+          firstIndex: isInternalDuplicate ? firstIndex : null,
+          checked: !isInternalDuplicate
         };
       });
 
       this.renderPreview();
+      Toast.show('解析成功，请确认预览中的商家与问答', 'success');
+    },
+
+    buildMerchantPreviewRows: function () {
+      var selectedIds = this.getSelectedMerchantIds();
+      var selectedItems = state.importParsedItems.filter(function (row) {
+        return row.checked && !row.isInternalDuplicate;
+      });
+
+      return this.getMerchants()
+        .filter(function (m) { return selectedIds.indexOf(m.id) !== -1; })
+        .map(function (merchant) {
+          var existingQMap = {};
+          MockStore.getMerchantKnowledge(merchant.id).forEach(function (k) {
+            existingQMap[k.standardQ] = k;
+          });
+
+          var writes = [];
+          var skips = [];
+          selectedItems.forEach(function (row) {
+            if (existingQMap[row.item.standardQ]) {
+              skips.push(row);
+            } else {
+              writes.push(row);
+            }
+          });
+
+          return {
+            merchantId: merchant.id,
+            merchantName: merchant.name,
+            writes: writes,
+            skips: skips
+          };
+        });
+    },
+
+    getPlannedWriteCount: function (merchantRows) {
+      return merchantRows.reduce(function (sum, row) { return sum + row.writes.length; }, 0);
     },
 
     renderPreview: function () {
       elements.importPreviewSection.style.display = 'block';
       elements.importNoPreview.style.display = 'none';
+      this.hideErrors();
 
-      var total = state.importParsedItems.length;
-      var existingDupCount = state.importParsedItems.filter(function (r) { return r.dupType === 'existing'; }).length;
-      var internalDupCount = state.importParsedItems.filter(function (r) { return r.dupType === 'internal'; }).length;
-      var dupCount = existingDupCount + internalDupCount;
-      var newCount = total - dupCount;
+      var merchantRows = this.buildMerchantPreviewRows();
+      var plannedWriteCount = this.getPlannedWriteCount(merchantRows);
+      var skipCount = merchantRows.reduce(function (sum, row) { return sum + row.skips.length; }, 0);
+      var internalCount = state.importParsedItems.filter(function (r) { return r.isInternalDuplicate; }).length;
+      var selectedItemCount = state.importParsedItems.filter(function (r) { return r.checked && !r.isInternalDuplicate; }).length;
 
       var statsHtml =
-        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-medium">新增 ' + newCount + ' 条</span>';
-      if (existingDupCount > 0) {
-        statsHtml += '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 font-medium">已有重复 ' + existingDupCount + ' 条</span>';
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-medium">将写入 ' + plannedWriteCount + ' 份</span>' +
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-medium">商家 ' + merchantRows.length + ' 家</span>' +
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-medium">问答 ' + selectedItemCount + ' 条</span>';
+      if (skipCount > 0) {
+        statsHtml += '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 font-medium">重复跳过 ' + skipCount + ' 份</span>';
       }
-      if (internalDupCount > 0) {
-        statsHtml += '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 font-medium">同批重复 ' + internalDupCount + ' 条</span>';
+      if (internalCount > 0) {
+        statsHtml += '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 font-medium">同批重复 ' + internalCount + ' 条</span>';
       }
-      statsHtml += '<span class="text-slate-500">共 ' + total + ' 条</span>';
-
       elements.importStats.innerHTML = statsHtml;
 
+      this.renderMerchantPreview(merchantRows);
+      this.renderItemPreview();
+      this.bindPreviewEvents();
+      this.updateSelectedCount(merchantRows, plannedWriteCount, skipCount);
+      elements.importModalSubmit.disabled = plannedWriteCount === 0;
+    },
+
+    renderMerchantPreview: function (merchantRows) {
+      var tbody = elements.importMerchantPreviewBody;
+      tbody.innerHTML = '';
+
+      if (merchantRows.length === 0) {
+        var emptyRow = document.createElement('tr');
+        emptyRow.innerHTML = '<td colspan="5" class="text-center text-slate-400 py-4">请先勾选至少一家商家</td>';
+        tbody.appendChild(emptyRow);
+        elements.importSelectAllMerchants.checked = false;
+        return;
+      }
+
+      merchantRows.forEach(function (row) {
+        var tr = document.createElement('tr');
+        if (row.writes.length === 0) tr.className = 'import-merchant-skip-all';
+        var reason = row.writes.length > 0
+          ? (row.skips.length > 0 ? row.skips.length + ' 条已有相同标准问，仅跳过这些问答' : '—')
+          : '所选问答均已有相同标准问，此商家不会写入';
+        var skippedQuestions = row.skips.map(function (skipRow) { return skipRow.item.standardQ; });
+        var reasonTitle = skippedQuestions.length
+          ? '跳过原因：该商家已有相同标准问\n' + skippedQuestions.map(function (q, i) { return (i + 1) + '. ' + q; }).join('\n')
+          : '';
+
+        tr.innerHTML =
+          '<td><input type="checkbox" class="import-preview-merchant-check" value="' + Utils.escapeHtml(row.merchantId) + '" checked /></td>' +
+          '<td>' + Utils.escapeHtml(row.merchantName) + ' <span class="text-xs text-slate-400 font-mono">' + Utils.escapeHtml(row.merchantId) + '</span></td>' +
+          '<td class="font-medium text-emerald-700">' + row.writes.length + '</td>' +
+          '<td class="' + (row.skips.length ? 'text-amber-700 font-medium' : '') + '">' + row.skips.length + '</td>' +
+          '<td class="text-xs" title="' + Utils.escapeHtml(reasonTitle) + '">' + Utils.escapeHtml(reason) + '</td>';
+        tbody.appendChild(tr);
+      });
+
+      var allMerchants = this.getMerchants();
+      elements.importSelectAllMerchants.checked = state.selectedMerchantIds.length === allMerchants.length;
+    },
+
+    renderItemPreview: function () {
       var tbody = elements.importPreviewBody;
       tbody.innerHTML = '';
 
       state.importParsedItems.forEach(function (row) {
-        var tr = document.createElement('tr');
-        if (row.isDuplicate) tr.className = 'import-dup-row';
-
         var k = row.item;
+        var tr = document.createElement('tr');
+        if (row.isInternalDuplicate) tr.className = 'import-dup-row';
+
+        var statusHtml = row.isInternalDuplicate
+          ? '<span class="import-badge-internal" title="与' + Utils.escapeHtml(state.importParsedItems[row.firstIndex].sourceLabel) + '标准问相同，不会重复写入">同批重复</span>'
+          : '<span class="import-badge-write">有效</span>';
+
         tr.innerHTML =
-          '<td class="text-center"><input type="checkbox" class="import-item-check" data-idx="' + row.index + '"' + (row.checked ? ' checked' : '') + (row.isDuplicate ? ' disabled' : '') + '/></td>' +
+          '<td class="text-center"><input type="checkbox" class="import-item-check" data-idx="' + row.index + '"' + (row.checked ? ' checked' : '') + (row.isInternalDuplicate ? ' disabled' : '') + ' /></td>' +
+          '<td class="text-xs text-slate-400 whitespace-nowrap">' + Utils.escapeHtml(row.sourceLabel) + '</td>' +
           '<td class="text-slate-800">' + Utils.escapeHtml(k.standardQ) + '</td>' +
           '<td class="text-subtle text-sm">' + Utils.escapeHtml((k.similarQs || []).join('；')) + '</td>' +
           '<td class="text-charcoal max-w-xs truncate" title="' + Utils.escapeHtml(k.answer) + '">' + Utils.escapeHtml(k.answer) + '</td>' +
-          '<td>' + (row.isDuplicate
-            ? (row.dupType === 'internal'
-              ? '<span class="import-badge-intdup" title="与第 ' + (row.firstIndex + 1) + ' 条标准问相同，同批重复">同批重复</span>'
-              : '<span class="import-badge-dup" title="已有相同标准问：' + Utils.escapeHtml((row.existingItem || {}).standardQ || '') + '">已有重复</span>')
-            : '<span class="import-badge-new">新增</span>') + '</td>';
-
+          '<td>' + statusHtml + '</td>';
         tbody.appendChild(tr);
       });
 
-      var nonDupItems = state.importParsedItems.filter(function (r) { return !r.isDuplicate; });
-      elements.importSelectAll.checked = nonDupItems.length > 0 && nonDupItems.every(function (r) { return r.checked; });
-      this.updateSelectedCount();
-      this.bindPreviewEvents();
+      var validRows = state.importParsedItems.filter(function (r) { return !r.isInternalDuplicate; });
+      elements.importSelectAll.checked = validRows.length > 0 && validRows.every(function (r) { return r.checked; });
     },
 
     bindPreviewEvents: function () {
       var self = this;
+
       elements.importPreviewBody.querySelectorAll('.import-item-check').forEach(function (cb) {
         cb.addEventListener('change', function () {
           var idx = parseInt(cb.dataset.idx, 10);
           state.importParsedItems[idx].checked = cb.checked;
-          self.updateSelectedCount();
-          var nonDupItems = state.importParsedItems.filter(function (r) { return !r.isDuplicate; });
-          elements.importSelectAll.checked = nonDupItems.length > 0 && nonDupItems.every(function (r) { return r.checked; });
+          self.renderPreview();
+        });
+      });
+
+      elements.importMerchantPreviewBody.querySelectorAll('.import-preview-merchant-check').forEach(function (cb) {
+        cb.addEventListener('change', function () {
+          var nextIds = state.selectedMerchantIds.slice();
+          var pos = nextIds.indexOf(cb.value);
+          if (cb.checked && pos === -1) {
+            nextIds.push(cb.value);
+          } else if (!cb.checked && pos !== -1) {
+            nextIds.splice(pos, 1);
+          }
+          self.setMerchantSelection(nextIds, true);
         });
       });
 
       elements.importSelectAll.onchange = function () {
         var checked = elements.importSelectAll.checked;
         state.importParsedItems.forEach(function (r) {
-          if (!r.isDuplicate) r.checked = checked;
+          if (!r.isInternalDuplicate) r.checked = checked;
         });
-        elements.importPreviewBody.querySelectorAll('.import-item-check').forEach(function (cb) {
-          var idx = parseInt(cb.dataset.idx, 10);
-          if (!state.importParsedItems[idx].isDuplicate) {
-            cb.checked = checked;
-          }
-        });
-        self.updateSelectedCount();
+        self.renderPreview();
+      };
+
+      elements.importSelectAllMerchants.onchange = function () {
+        var ids = elements.importSelectAllMerchants.checked
+          ? self.getMerchants().map(function (m) { return m.id; })
+          : [];
+        self.setMerchantSelection(ids, true);
       };
     },
 
-    updateSelectedCount: function () {
-      var selected = state.importParsedItems.filter(function (r) { return r.checked; }).length;
-      var newSelected = state.importParsedItems.filter(function (r) { return r.checked && !r.isDuplicate; }).length;
-      var parts = ['已选 ' + selected + ' 条'];
-      if (newSelected > 0) parts.push('新增 ' + newSelected);
+    updateSelectedCount: function (merchantRows, plannedWriteCount, skipCount) {
+      var parts = [
+        '已选商家 ' + merchantRows.length + ' 家',
+        '预计写入 ' + plannedWriteCount + ' 份独立知识'
+      ];
+      if (skipCount > 0) parts.push('重复跳过 ' + skipCount + ' 份');
       elements.importSelectedCount.textContent = parts.join('，');
     },
 
     doImport: function () {
-      var merchantId = elements.importMerchantSelect.value;
-      if (!merchantId) {
-        Toast.show('请选择商家', 'error');
+      var merchantIds = this.getSelectedMerchantIds();
+      if (merchantIds.length === 0) {
+        Toast.show('请至少勾选一家商家', 'error');
         return;
       }
 
       var items = state.importParsedItems
-        .filter(function (r) { return r.checked && !r.isDuplicate; })
+        .filter(function (r) { return r.checked && !r.isInternalDuplicate; })
         .map(function (r) { return r.item; });
 
       if (items.length === 0) {
-        Toast.show('没有可导入的新知识（重复内容已被自动跳过）', 'error');
+        Toast.show('请至少勾选一条有效问答', 'error');
         return;
       }
 
-      MockStore.batchAddMerchantKnowledge(merchantId, items);
+      var merchantRows = this.buildMerchantPreviewRows();
+      if (this.getPlannedWriteCount(merchantRows) === 0) {
+        Toast.show('所选商家均已有相同标准问，未提交任何内容', 'error');
+        return;
+      }
+
+      var result = MockStore.batchAddMerchantKnowledgeForMerchants(merchantIds, items);
+      if (result.totalAdded === 0) {
+        this.renderPreview();
+        Toast.show('导入失败，未写入任何知识；此前已成功导入的内容仍保留', 'error');
+        return;
+      }
+
+      var message = '成功写入 ' + result.totalAdded + ' 份独立知识';
+      if (result.totalSkipped > 0) message += '，重复跳过 ' + result.totalSkipped + ' 份';
+      if (result.totalFailed > 0) message += '，' + result.totalFailed + ' 家写入失败';
+
       this.closeModal();
-      state.currentMerchantId = merchantId;
-      elements.merchantSelect.value = merchantId;
+      state.currentMerchantId = merchantIds.length === 1 ? merchantIds[0] : '';
+      elements.merchantSelect.value = state.currentMerchantId;
       MerchantManager.fillSelect();
       KnowledgeManager.fillFormSelect();
       KnowledgeManager.render();
-      Toast.show('成功导入 ' + items.length + ' 条知识', 'success');
+      Toast.show(message, result.totalFailed > 0 ? 'info' : 'success');
     }
   };
 
@@ -674,6 +995,25 @@
     elements.btnAddKnowledge.parentElement.querySelector('#btnBatchImport').addEventListener('click', function () {
       BatchImportManager.openModal();
     });
+    elements.importMerchantPanel.addEventListener('change', function (e) {
+      var checkbox = e.target.closest ? e.target.closest('.import-merchant-check') : null;
+      if (!checkbox) return;
+      var ids = Array.prototype.map.call(
+        elements.importMerchantPanel.querySelectorAll('.import-merchant-check:checked'),
+        function (cb) { return cb.value; }
+      );
+      BatchImportManager.setMerchantSelection(ids, true, false);
+    });
+    elements.btnSelectAllImportMerchants.addEventListener('click', function () {
+      var merchants = MockStore.getMerchants();
+      var ids = state.selectedMerchantIds.length === merchants.length
+        ? []
+        : merchants.map(function (m) { return m.id; });
+      BatchImportManager.setMerchantSelection(ids, true, false);
+    });
+    elements.btnClearImportMerchants.addEventListener('click', function () {
+      BatchImportManager.setMerchantSelection([], true);
+    });
     elements.importTabFile.addEventListener('click', function () {
       BatchImportManager.switchTab('file');
     });
@@ -708,6 +1048,9 @@
     });
     elements.btnParseImport.addEventListener('click', function () {
       BatchImportManager.parseContent();
+    });
+    elements.importTextArea.addEventListener('input', function () {
+      BatchImportManager.resetPreview();
     });
     elements.importModalCancel.addEventListener('click', function () {
       BatchImportManager.closeModal();

@@ -155,14 +155,19 @@
 
   <!-- 批量导入弹层 -->
   <div id="batchImportModal" class="modal-overlay" style="display: none;">
-    <div class="modal-box premium-card max-w-3xl rounded-2xl border border-slate-200">
+    <div class="modal-box premium-card rounded-2xl border border-slate-200" style="max-width: 56rem;">
       <h3 class="modal-title text-slate-900">批量导入商家知识</h3>
       <div class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">选择商家 <span class="text-red-500">*</span></label>
-          <select id="importMerchantSelect" class="input-common select-common">
-            <option value="">请选择要导入知识的商家</option>
-          </select>
+          <div class="relative flex items-center justify-between mb-2">
+            <label class="block text-sm font-medium text-slate-700 mb-1">选择商家 <span class="text-red-500">*</span>（可多选）</label>
+            <div class="flex items-center gap-3 text-xs absolute right-0 top-0">
+              <span id="importMerchantSelectedCount" class="text-slate-500">已选 0 家</span>
+              <button type="button" id="btnSelectAllImportMerchants" class="btn-link" style="padding-left:0.5rem;padding-right:0.5rem;">全选</button>
+              <button type="button" id="btnClearImportMerchants" class="btn-link" style="padding-left:0.5rem;padding-right:0.5rem;">清空</button>
+            </div>
+          </div>
+          <div id="importMerchantPanel" class="import-merchant-panel"></div>
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-700 mb-1">导入方式</label>
@@ -176,37 +181,73 @@
           <div class="import-file-zone" id="importFileZone">
             <span class="iconify" data-icon="lucide:upload-cloud" data-width="32" data-height="32" style="color: var(--slate-400);"></span>
             <span class="text-sm text-slate-500 mt-2">点击或拖拽文件到此处</span>
-            <span class="text-xs text-slate-400 mt-1">CSV 格式：标准问,相似问,答案；JSON 格式：数组对象</span>
+            <span class="text-xs text-slate-400 mt-1">CSV 表头：标准问,相似问,答案；JSON 为对象数组</span>
             <input type="file" id="importFileInput" accept=".csv,.json" style="display: none;" />
           </div>
           <div id="importFileName" class="text-sm text-slate-600 mt-2 hidden"></div>
         </div>
         <div id="importTextPanel" style="display: none;">
           <label class="block text-sm font-medium text-slate-700 mb-1">粘贴问答内容</label>
-          <textarea id="importTextArea" class="input-common min-h-[160px] rounded-xl font-mono text-xs" placeholder="每行一条，格式：标准问|相似问1;相似问2|答案&#10;示例：配送范围是多少|送货范围;能配送吗|提供门店周边3公里范围内的配送服务"></textarea>
-          <span class="text-xs text-slate-400 mt-1 block">格式：标准问|相似问(分号分隔)|答案，每行一条</span>
+          <textarea id="importTextArea" class="input-common min-h-[160px] rounded-xl font-mono text-xs" placeholder="每行一条，格式：标准问|相似问1;相似问2|答案&#10;示例：配送范围是多少|送货范围;能配送吗|提供门店周边3公里范围内的配送服务&#10;&#10;也可粘贴 JSON 数组，字段支持 standardQ/similarQs/answer 或中文键名"></textarea>
+          <span class="text-xs text-slate-400 mt-1 block">文本格式：标准问|相似问(分号分隔)|答案，每行一条</span>
         </div>
+        <div id="importError" class="import-error-box hidden"></div>
         <button type="button" id="btnParseImport" class="btn-secondary inline-flex items-center gap-2"><span class="iconify" data-icon="lucide:search" data-width="16" data-height="16"></span>解析并预览</button>
       </div>
 
       <div id="importPreviewSection" style="display: none;" class="mt-6">
-        <div class="flex items-center justify-between mb-3">
-          <h4 class="text-sm font-semibold text-slate-900">预览导入内容</h4>
-          <div id="importStats" class="flex items-center gap-3 text-xs"></div>
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h4 class="text-sm font-semibold text-slate-900">导入预览</h4>
+          <div id="importStats" class="flex flex-wrap items-center gap-2 text-xs"></div>
         </div>
-        <div class="import-preview-table-wrap">
-          <table class="w-full text-sm">
-            <thead>
-              <tr>
-                <th class="w-10"><input type="checkbox" id="importSelectAll" checked /></th>
-                <th>标准问</th>
-                <th>相似问</th>
-                <th>答案</th>
-                <th class="w-24">状态</th>
-              </tr>
-            </thead>
-            <tbody id="importPreviewBody"></tbody>
-          </table>
+
+        <div class="mb-5">
+          <div class="flex items-center justify-between mb-2">
+            <h5 class="text-xs font-semibold uppercase tracking-wide text-slate-500">写入商家</h5>
+            <label class="flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" id="importSelectAllMerchants" />
+              全选商家
+            </label>
+          </div>
+          <div class="import-preview-table-wrap" style="max-height: 11rem;">
+            <table class="w-full text-sm">
+              <thead>
+                <tr>
+                  <th class="w-10"></th>
+                  <th>商家</th>
+                  <th class="w-24">预计写入</th>
+                  <th class="w-24">跳过</th>
+                  <th>跳过原因</th>
+                </tr>
+              </thead>
+              <tbody id="importMerchantPreviewBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <h5 class="text-xs font-semibold uppercase tracking-wide text-slate-500">问答内容</h5>
+            <label class="flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" id="importSelectAll" checked />
+              全选有效问答
+            </label>
+          </div>
+          <div class="import-preview-table-wrap">
+            <table class="w-full text-sm">
+              <thead>
+                <tr>
+                  <th class="w-10"></th>
+                  <th class="w-16">来源</th>
+                  <th>标准问</th>
+                  <th>相似问</th>
+                  <th>答案</th>
+                  <th class="w-24">状态</th>
+                </tr>
+              </thead>
+              <tbody id="importPreviewBody"></tbody>
+            </table>
+          </div>
         </div>
         <div class="flex justify-between items-center mt-4">
           <span id="importSelectedCount" class="text-sm text-slate-600"></span>

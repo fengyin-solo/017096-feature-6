@@ -20,6 +20,11 @@
     },
     remove: function (key) {
       try { localStorage.removeItem(STORAGE_PREFIX + key); } catch (_) {}
+    },
+
+    // 供关键写入路径做持久化校验，不吞掉 quota / 隐私模式异常
+    saveOrThrow: function (key, value) {
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
     }
   };
 
@@ -254,10 +259,11 @@
   };
 
   // 生成短 ID，格式如 M006、SET005、k_abc123
+  var knowledgeIdSequence = 0;
   function nextId(prefix, existingList) {
-    // 知识条目使用短时间戳
+    // 知识条目使用时间戳 + 序号，避免批量导入时同一毫秒生成重复 ID
     if (prefix === 'k') {
-      return 'k_' + Date.now().toString(36);
+      return 'k_' + Date.now().toString(36) + '_' + (knowledgeIdSequence++).toString(36) + '_' + Math.random().toString(36).slice(2, 6);
     }
     
     // 其他类型使用递增编号
@@ -366,12 +372,81 @@
       var list = store.getMerchantKnowledge(merchantId).slice();
       var added = [];
       items.forEach(function (item) {
-        item.id = item.id || nextId('k');
-        list.push(item);
-        added.push(item);
+        var copy = JSON.parse(JSON.stringify(item));
+        copy.id = nextId('k');
+        list.push(copy);
+        added.push(copy);
       });
       store.setMerchantKnowledge(merchantId, list);
       return added;
+    },
+
+    /**
+     * 为多个商家独立写入同一批问答。
+     * 每个商家单独判重、单独保存：某一家失败或部分重复，不影响其它商家。
+     */
+    batchAddMerchantKnowledgeForMerchants: function (merchantIds, items) {
+      var results = [];
+      var totalAdded = 0;
+      var totalSkipped = 0;
+      var totalFailed = 0;
+
+      merchantIds.forEach(function (merchantId) {
+        var added = [];
+        var skipped = [];
+        var error = null;
+
+        try {
+          var existing = store.getMerchantKnowledge(merchantId).slice();
+          var existingQMap = {};
+          existing.forEach(function (k) {
+            existingQMap[k.standardQ] = k;
+          });
+
+          items.forEach(function (item) {
+            if (existingQMap[item.standardQ]) {
+              skipped.push({ item: item, reason: '该商家已有相同标准问' });
+              return;
+            }
+
+            var copy = JSON.parse(JSON.stringify(item));
+            copy.id = nextId('k');
+            existing.push(copy);
+            existingQMap[copy.standardQ] = copy;
+            added.push(copy);
+          });
+
+          // 该商家只在确实有新增时提交；即使保存失败，前一个商家也已经独立落库
+          if (added.length > 0) {
+            var allKnowledge = load('merchantKnowledge', defaultMerchantKnowledge);
+            allKnowledge[merchantId] = existing;
+            StorageUtil.saveOrThrow('merchantKnowledge', allKnowledge);
+          }
+        } catch (e) {
+          error = e && e.message ? e.message : '写入失败，请稍后重试';
+          added = [];
+          skipped = [];
+          totalFailed += 1;
+        }
+
+        totalAdded += added.length;
+        totalSkipped += skipped.length;
+        results.push({
+          merchantId: merchantId,
+          added: added,
+          addedCount: added.length,
+          skipped: skipped,
+          skippedCount: skipped.length,
+          error: error
+        });
+      });
+
+      return {
+        results: results,
+        totalAdded: totalAdded,
+        totalSkipped: totalSkipped,
+        totalFailed: totalFailed
+      };
     },
 
     getMerchantSets: function () {
